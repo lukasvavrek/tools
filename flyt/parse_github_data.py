@@ -484,16 +484,36 @@ class GitHubTeamAnalyzer:
         avg_pr_duration = sum(pr_durations) / len(pr_durations) if pr_durations else 0
         avg_pr_engagement = sum(pr_engagement_scores) / len(pr_engagement_scores) if pr_engagement_scores else 0
 
-        # Calculate contribution score
-        contribution_score = (
-                total_commits * 1 +  # 1 point per commit
-                len(created_prs) * 3 +  # 3 points per PR created
-                review_stats['APPROVED'] * 2 +  # 2 points per approval
-                review_stats['CHANGES_REQUESTED'] * 2 +  # 2 points per review requesting changes
-                review_stats['COMMENTED'] * 1 +  # 1 point per review comment
-                total_comments * 1 +  # 1 point per comment
-                avg_pr_engagement * 0.5  # Additional points for PR engagement
+        # Enhanced contribution score calculation
+        def calculate_pr_complexity_multiplier(pr):
+            """Calculate a multiplier based on PR complexity."""
+            changes = pr.get('additions', 0) + pr.get('deletions', 0)
+            if changes > 1000:
+                return 1.5  # Large PRs
+            elif changes > 500:
+                return 1.25  # Medium PRs
+            return 1.0  # Standard PRs
+
+        # Base scores
+        commit_score = total_commits * 2  # Increased weight for commits
+        
+        # PR creation score with complexity consideration
+        pr_score = sum(calculate_pr_complexity_multiplier(pr) * 5 for pr in created_prs)
+        
+        # Review scores with quality consideration
+        review_score = (
+            review_stats['APPROVED'] * 3 +  # Approvals are valuable
+            review_stats['CHANGES_REQUESTED'] * 4 +  # Detailed reviews requesting changes are most valuable
+            review_stats['COMMENTED'] * 2  # General review comments
         )
+        
+        # Comment quality score
+        comment_score = review_comments_count * 2 + pr_comments_count * 1.5
+        
+        # Engagement bonus
+        engagement_bonus = avg_pr_engagement * 1.0
+        
+        contribution_score = commit_score + pr_score + review_score + comment_score + engagement_bonus
 
         return {
             'username': username,
@@ -544,13 +564,15 @@ contribution_score:          Overall contribution score (weighted sum of activit
 
 Contribution Score Weights:
 -------------------------
-• Commits:                1 point each
-• Pull Requests Created:  3 points each
-• PR Approvals:           2 points each
-• Changes Requested:      2 points each
-• Review Comments:        1 point each
-• General Comments:       1 point each
-• PR Engagement:          0.5 points per engagement score
+• Commits:                2 points each
+• Pull Requests:          5 points each (with complexity multiplier)
+  - Large PR (>1000 changes):   1.5x multiplier
+  - Medium PR (>500 changes):   1.25x multiplier
+• PR Approvals:           3 points each
+• Changes Requested:      4 points each
+• Review Comments:        2 points each
+• General Comments:       1.5 points each
+• PR Engagement:          1.0 points per engagement score
 
 Engagement Score Calculation:
 --------------------------
