@@ -13,6 +13,7 @@ import argparse
 import re
 from urllib.parse import parse_qs, urlparse
 import json
+import sys
 import hashlib
 import time
 from pathlib import Path
@@ -505,20 +506,80 @@ class GitHubTeamAnalyzer:
         return (f"API Rate Limit: {self.rate_limit.remaining}/{self.rate_limit.limit} "
                 f"requests remaining (Resets at {reset_time})")
 
+def print_statistics_explanation():
+    """Print detailed explanation of all statistics and scoring."""
+    explanation = """
+GitHub Team Analytics - Statistics Explanation
+===========================================
+
+Column Descriptions:
+------------------
+username:                    GitHub username of the team member
+commit_count:                Number of commits authored by the user
+pr_count:                    Number of Pull Requests created by the user
+reviews_given:               Total number of PR reviews performed
+reviews_approved:            Number of PRs approved by the user
+reviews_changes_requested:   Number of PRs where changes were requested
+reviews_commented:           Number of PRs where review comments were left
+review_comments:             Number of inline comments made during code reviews
+pr_comments:                 Number of general comments made on PRs
+total_comments:              Sum of all comments (review + PR comments)
+avg_pr_duration_hours:       Average time PRs stay open (from creation to close/current)
+avg_pr_engagement:           Average engagement score on user's PRs (based on activity)
+contribution_score:          Overall contribution score (weighted sum of activities)
+
+Contribution Score Weights:
+-------------------------
+• Commits:                1 point each
+• Pull Requests Created:  3 points each
+• PR Approvals:           2 points each
+• Changes Requested:      2 points each
+• Review Comments:        1 point each
+• General Comments:       1 point each
+• PR Engagement:          0.5 points per engagement score
+
+Engagement Score Calculation:
+--------------------------
+• Regular PR comment:     2 points
+• Inline review comment:  3 points
+• PR review:              2 points
+
+Note: All metrics are calculated within the specified time window (default: 90 days)
+"""
+    print(explanation)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze GitHub team statistics')
-    parser.add_argument('--org', required=True, help='GitHub organization name')
-    parser.add_argument('--team', required=True, help='Team slug')
-    parser.add_argument('--repo', required=True, help='Repository name')
+    
+    # Create argument groups to handle required args better
+    required_args = parser.add_argument_group('required arguments')
+    required_args.add_argument('--org', help='GitHub organization name')
+    required_args.add_argument('--team', help='Team slug')
+    required_args.add_argument('--repo', help='Repository name')
+    
+    # Optional arguments
     parser.add_argument('--days', type=int, default=90, help='Number of days to analyze')
+    parser.add_argument('--ignore-users', type=str, nargs='*',
+                       help='List of GitHub usernames to ignore in the analysis')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
     parser.add_argument('--cache-ttl', type=int, default=24, help='Cache TTL in hours')
-    parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers')
     parser.add_argument('--no-cache', action='store_true', help='Disable caching')
-    parser.add_argument('--ignore-users', type=str, nargs='*', 
-                      help='List of GitHub usernames to ignore in the analysis')
+    parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers')
+    parser.add_argument('--explain', action='store_true',
+                      help='Show detailed explanation of statistics and exit')
     args = parser.parse_args()
+
+    # If --explain flag is used, show explanation and exit
+    if args.explain:
+        print_statistics_explanation()
+        sys.exit(0)
+
+    # Check required arguments only if not showing explanation
+    if not (args.org and args.team and args.repo):
+        parser.error("the following arguments are required when not using --explain: "
+                    "--org, --team, --repo")
+        sys.exit(1)
 
     token = os.getenv('GITHUB_TOKEN')
     if not token:
