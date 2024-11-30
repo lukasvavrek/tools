@@ -88,7 +88,7 @@ class Cache:
 
 class GitHubTeamAnalyzer:
     def __init__(self, token: str, org: str, team_slug: str, repo: str,
-                 verbose: bool = False, cache_ttl: int = 24, max_workers: int = 5):
+                 verbose: bool = False, cache_ttl: int = 24, max_workers: int = 5, ignored_users: List[str] = None):
         """
         Initialize the GitHub Team Analyzer.
 
@@ -100,12 +100,14 @@ class GitHubTeamAnalyzer:
             verbose (bool): Enable verbose logging
             cache_ttl (int): Cache TTL in hours
             max_workers (int): Maximum number of parallel workers
+            ignored_users (List[str]): List of GitHub usernames to ignore
         """
         self.headers = {
             'Authorization': f'token {token}',
             'Accept': 'application/vnd.github.v3+json'
         }
         self.base_url = 'https://api.github.com'
+        self.ignored_users = set(map(str.lower, ignored_users or []))
         self.org = org
         self.team_slug = team_slug
         self.repo = repo
@@ -217,7 +219,12 @@ class GitHubTeamAnalyzer:
         url = f"{self.base_url}/orgs/{self.org}/teams/{self.team_slug}/members"
 
         members = self._paginated_get(url)
-        self.logger.info(f"Found {len(members)} team members")
+        # Filter out ignored users
+        members = [
+            member for member in members 
+            if member['login'].lower() not in self.ignored_users
+        ]
+        self.logger.info(f"Found {len(members)} team members (excluding {len(self.ignored_users)} ignored users)")
         return members
 
     def _fetch_all_pr_data(self, days: int = 90) -> Dict[str, Any]:
@@ -509,6 +516,8 @@ def main():
     parser.add_argument('--cache-ttl', type=int, default=24, help='Cache TTL in hours')
     parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers')
     parser.add_argument('--no-cache', action='store_true', help='Disable caching')
+    parser.add_argument('--ignore-users', type=str, nargs='*', 
+                      help='List of GitHub usernames to ignore in the analysis')
     args = parser.parse_args()
 
     token = os.getenv('GITHUB_TOKEN')
@@ -523,7 +532,8 @@ def main():
         repo=args.repo,
         verbose=args.verbose,
         cache_ttl=0 if args.no_cache else args.cache_ttl,
-        max_workers=args.workers
+        max_workers=args.workers,
+        ignored_users=args.ignore_users
     )
 
     # Generate report
@@ -539,6 +549,9 @@ def main():
     print("\nTeam Activity Report (Last 90 days)")
     print("=" * 50)
     print(df_sorted.to_string(index=False))
+
+    if args.ignore_users:
+        print(f"\nIgnored Users: {', '.join(args.ignore_users)}")
 
     print("\nTeam Summary:")
     print("=" * 50)
