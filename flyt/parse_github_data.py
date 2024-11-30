@@ -415,16 +415,26 @@ class GitHubTeamAnalyzer:
 
         return pd.DataFrame(stats)
 
+    def _get_pr_commits_count(self, pr_number: int) -> int:
+        """Get the number of commits in a specific PR."""
+        url = f"{self.base_url}/repos/{self.org}/{self.repo}/pulls/{pr_number}/commits"
+        commits = self._paginated_get(url)
+        return len(commits)
+
+    def _get_commits_from_prs(self, prs: List[Dict]) -> int:
+        """Calculate total number of commits from a list of PRs."""
+        total_commits = 0
+        for pr in prs:
+            pr_number = pr['number']
+            total_commits += self._get_pr_commits_count(pr_number)
+        return total_commits
+
     def get_member_stats(self, username: str, days: int = 90, pr_data: Dict = None) -> Dict[str, Any]:
         """
         Get statistics for a specific team member using pre-fetched PR data.
         """
         self.logger.debug(f"Processing stats for user: {username}")
         since = (datetime.now() - timedelta(days=days)).isoformat()
-
-        # Get commits
-        commits_url = f"{self.base_url}/repos/{self.org}/{self.repo}/commits"
-        commits = self._paginated_get(commits_url, {'author': username, 'since': since})
 
         # Initialize counters
         created_prs = []
@@ -466,13 +476,17 @@ class GitHubTeamAnalyzer:
         total_comments = review_comments_count + pr_comments_count
         total_reviews = sum(review_stats.values())
 
+        # Calculate total commits from PRs
+        pr_commits = self._get_commits_from_prs(created_prs)
+        total_commits = pr_commits
+
         # Calculate average PR duration and engagement
         avg_pr_duration = sum(pr_durations) / len(pr_durations) if pr_durations else 0
         avg_pr_engagement = sum(pr_engagement_scores) / len(pr_engagement_scores) if pr_engagement_scores else 0
 
         # Calculate contribution score
         contribution_score = (
-                len(commits) * 1 +  # 1 point per commit
+                total_commits * 1 +  # 1 point per commit
                 len(created_prs) * 3 +  # 3 points per PR created
                 review_stats['APPROVED'] * 2 +  # 2 points per approval
                 review_stats['CHANGES_REQUESTED'] * 2 +  # 2 points per review requesting changes
@@ -483,7 +497,7 @@ class GitHubTeamAnalyzer:
 
         return {
             'username': username,
-            'commit_count': len(commits),
+            'commit_count': total_commits,
             'pr_count': len(created_prs),
             'reviews_given': total_reviews,
             'reviews_approved': review_stats['APPROVED'],
