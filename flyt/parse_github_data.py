@@ -353,6 +353,33 @@ class GitHubTeamAnalyzer:
         self.logger.info("Completed fetching all PR data")
         return pr_data
 
+    def _calculate_pr_duration(self, pr: Dict) -> float:
+        """Calculate the duration a PR was open in hours."""
+        # Ensure timezone awareness for all datetime objects
+        created_at = datetime.fromisoformat(pr['created_at'].replace('Z', '+00:00'))
+        if pr['state'] == 'open':
+            end_time = datetime.now(timezone.utc)
+        else:
+            # Handle closed PRs
+            end_time = datetime.fromisoformat(pr['closed_at'].replace('Z', '+00:00'))
+        
+        duration = end_time - created_at
+        return duration.total_seconds() / 3600  # Convert to hours
+
+    def _calculate_pr_engagement(self, pr_data: Dict) -> int:
+        """Calculate engagement score based on PR comments."""
+        engagement_score = 0
+        
+        # Count all types of comments
+        engagement_score += len(pr_data['comments']) * 2  # Regular comments
+        engagement_score += len(pr_data['review_comments']) * 3  # Review comments (inline)
+        
+        # Add points for each review
+        for review in pr_data['reviews']:
+            engagement_score += 2  # Each review adds points
+            
+        return engagement_score
+
     def generate_team_report(self, days: int = 90) -> pd.DataFrame:
         """Generate a comprehensive team report."""
         self.logger.info(f"Generating team report for the last {days} days")
@@ -395,6 +422,8 @@ class GitHubTeamAnalyzer:
         created_prs = []
         review_stats = defaultdict(int)
         review_comments_count = 0
+        pr_durations = []
+        pr_engagement_scores = []
         pr_comments_count = 0
 
         # Process PR data from lookup
@@ -403,6 +432,10 @@ class GitHubTeamAnalyzer:
 
             # Check if user created this PR
             if pr['user']['login'] == username:
+                # Calculate PR duration
+                pr_durations.append(self._calculate_pr_duration(pr))
+                # Calculate engagement score for this PR
+                pr_engagement_scores.append(self._calculate_pr_engagement(data))
                 created_prs.append(pr)
 
             # Count user's reviews
@@ -425,6 +458,10 @@ class GitHubTeamAnalyzer:
         total_comments = review_comments_count + pr_comments_count
         total_reviews = sum(review_stats.values())
 
+        # Calculate average PR duration and engagement
+        avg_pr_duration = sum(pr_durations) / len(pr_durations) if pr_durations else 0
+        avg_pr_engagement = sum(pr_engagement_scores) / len(pr_engagement_scores) if pr_engagement_scores else 0
+
         # Calculate contribution score
         contribution_score = (
                 len(commits) * 1 +  # 1 point per commit
@@ -432,7 +469,8 @@ class GitHubTeamAnalyzer:
                 review_stats['APPROVED'] * 2 +  # 2 points per approval
                 review_stats['CHANGES_REQUESTED'] * 2 +  # 2 points per review requesting changes
                 review_stats['COMMENTED'] * 1 +  # 1 point per review comment
-                total_comments * 1  # 1 point per comment
+                total_comments * 1 +  # 1 point per comment
+                avg_pr_engagement * 0.5  # Additional points for PR engagement
         )
 
         return {
@@ -446,7 +484,9 @@ class GitHubTeamAnalyzer:
             'review_comments': review_comments_count,
             'pr_comments': pr_comments_count,
             'total_comments': total_comments,
-            'contribution_score': contribution_score
+            'contribution_score': contribution_score,
+            'avg_pr_duration_hours': round(avg_pr_duration, 1),
+            'avg_pr_engagement': round(avg_pr_engagement, 1)
         }
 
     def get_rate_limit_info(self) -> str:
@@ -509,6 +549,8 @@ def main():
     print(f"Most Active Member: {df_sorted.iloc[0]['username']}")
     print(f"Average Reviews per Member: {df['reviews_given'].mean():.1f}")
     print(f"Average Comments per Member: {df['total_comments'].mean():.1f}")
+    print(f"Average PR Duration (hours): {df['avg_pr_duration_hours'].mean():.1f}")
+    print(f"Average PR Engagement: {df['avg_pr_engagement'].mean():.1f}")
 
     print("\nPerformance Statistics:")
     print("=" * 50)
