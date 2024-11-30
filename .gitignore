@@ -2,3 +2,6 @@
 .idea/
 .github_cache/
 .env
+**/__pycache__/
+poetry.lock
+run/**
