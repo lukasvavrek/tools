@@ -1,10 +1,10 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 
 import argparse
 import base64
 from dataclasses import dataclass, field
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
 
@@ -20,10 +20,10 @@ class TokenContext:
 
     @dataclass
     class Claims:
-        exp: datetime = datetime.utcnow() + timedelta(days=1)
+        exp: datetime = datetime.now(timezone.utc) + timedelta(days=1)
 
         def __init__(self):
-            self.exp = datetime.utcnow() + timedelta(days=1)
+            self.exp = datetime.now(timezone.utc) + timedelta(days=1)
             # Load all values from environment variables
             self.applicationId = os.getenv('JWT_APPLICATION_ID')
             self.applicationName = os.getenv('JWT_APPLICATION_NAME')
