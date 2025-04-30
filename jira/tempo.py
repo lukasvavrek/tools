@@ -332,6 +332,8 @@ def parse_args():
     parser.add_argument("--approvals", type=int, metavar="TEAM_ID", help="Show timesheet approvals for a team")
     parser.add_argument("--period-start", type=str, metavar="YYYY-MM-DD", 
                        help="Start date for approval period (default: first day of current month)")
+    parser.add_argument("--status", type=str, nargs="+", choices=["waiting_for_approval", "open", "approved"],
+                       help="Filter by specific status(es). Can specify multiple values.")
     
     return parser.parse_args()
 
@@ -479,6 +481,13 @@ def main():
                 print(f"{'Name':<25} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12}")
                 print("-" * 100)
                 
+                # Count totals for the summary
+                total_members = 0
+                total_worked_hours = 0
+                total_required_hours = 0
+                total_submitted_hours = 0
+                filtered_count = 0
+                
                 # Calculate and display completion percentages for each user
                 for approval in approval_data['approvals']:
                     user = approval.get('user', {})
@@ -488,6 +497,22 @@ def main():
                     worked_seconds = approval.get('workedSeconds', 0)
                     required_seconds = approval.get('requiredSeconds', 0) 
                     submitted_seconds = approval.get('submittedSeconds', 0)
+                    
+                    # Apply status filter if specified
+                    if args.status and status not in args.status:
+                        # Count in totals but skip display
+                        filtered_count += 1
+                        total_members += 1
+                        total_worked_hours += worked_seconds / 3600
+                        total_required_hours += required_seconds / 3600
+                        total_submitted_hours += submitted_seconds / 3600
+                        continue
+                    
+                    # Count in totals
+                    total_members += 1
+                    total_worked_hours += worked_seconds / 3600
+                    total_required_hours += required_seconds / 3600
+                    total_submitted_hours += submitted_seconds / 3600
                     
                     # Convert seconds to hours (for display purposes)
                     worked_hours = worked_seconds / 3600
@@ -502,10 +527,34 @@ def main():
                     # Colorize status for better readability
                     status_display = status.replace('_', ' ').title()
                     
-                    # Format completion with color indicators
-                    completion_str = f"{completion_pct:.1f}%"
+                    # Format all numeric values with right alignment within their columns
+                    # This ensures decimal points align while maintaining column appearance
+                    completion_str = f"{completion_pct:6.1f}%"
+                    worked_str = f"{worked_hours:6.1f}"
+                    required_str = f"{required_hours:6.1f}"
+                    submitted_str = f"{submitted_hours:6.1f}"
                     
-                    print(f"{display_name:<25} | {status_display:<20} | {completion_str:^15} | {worked_hours:^12.1f} | {required_hours:^12.1f} | {submitted_hours:^12.1f}")
+                    print(f"{display_name:<25} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12}")
+                
+                # Display summary information if there were any filtered results
+                if filtered_count > 0 or args.status:
+                    print("-" * 100)
+                    total_completion = 0
+                    if total_required_hours > 0:
+                        total_completion = (total_worked_hours / total_required_hours) * 100
+                    
+                    # Format the summary values
+                    total_completion_str = f"{total_completion:6.1f}%"
+                    total_worked_str = f"{total_worked_hours:6.1f}"
+                    total_required_str = f"{total_required_hours:6.1f}"
+                    total_submitted_str = f"{total_submitted_hours:6.1f}"
+                    
+                    # Show summary line with totals
+                    print(f"{'SUMMARY':<25} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12}")
+                    
+                    if args.status:
+                        status_list = ', '.join(args.status)
+                        print(f"\nFiltered by status: {status_list}")
                 
         except Exception as e:
             logger.error(f"Failed to retrieve timesheet approvals: {e}")
