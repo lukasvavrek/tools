@@ -312,6 +312,110 @@ class JiraTempoClient:
             if hasattr(e.response, 'text'):
                 logger.error(f"Response text: {e.response.text}")
             raise
+    
+    def search_worklogs(self, from_date: str, to_date: str, worker_keys: List[str]) -> List[Dict[str, Any]]:
+        """
+        Search for worklogs by date range and worker keys.
+        
+        Args:
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            worker_keys: List of worker keys (e.g., ["JIRAUSER93736"])
+            
+        Returns:
+            List of worklog entries
+            
+        Example response:
+        [
+            {
+                "timeSpent": "4h",
+                "timeSpentSeconds": 14400,
+                "comment": "Working on issue VFSOS-1867",
+                "issue": {
+                    "key": "VFSOS-1867",
+                    "summary": "Add new payment to decision from submenuitem Payments"
+                },
+                "worker": "JIRAUSER93736",
+                "started": "2025-04-01 08:00:00.000"
+            },
+            ...
+        ]
+        """
+        endpoint = "rest/tempo-timesheets/4/worklogs/search"
+        
+        # Prepare request body
+        data = {
+            "from": from_date,
+            "to": to_date,
+            "worker": worker_keys
+        }
+        
+        # Make the request
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        logger.debug(f"Making POST request to {url} with data {data}")
+        
+        try:
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+            
+            # Handle empty responses
+            if not response.text:
+                return []
+                
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request failed: {e}")
+            if hasattr(e.response, 'text'):
+                logger.error(f"Response text: {e.response.text}")
+            raise
+    
+    def summarize_worklogs_by_issue(self, worklogs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Summarize worklog data by issue.
+        
+        Args:
+            worklogs: List of worklog entries from search_worklogs
+            
+        Returns:
+            Dictionary with issue keys as keys and summary information as values
+        """
+        summary = {}
+        
+        for worklog in worklogs:
+            issue = worklog.get('issue', {})
+            issue_key = issue.get('key', 'No Issue')
+            issue_summary = issue.get('summary', 'No Summary')
+            time_spent_seconds = worklog.get('timeSpentSeconds', 0)
+            
+            if issue_key not in summary:
+                summary[issue_key] = {
+                    'key': issue_key,
+                    'summary': issue_summary,
+                    'total_seconds': 0,
+                    'total_hours': 0,
+                    'total_days': 0,
+                    'worklog_count': 0,
+                    'dates': set()
+                }
+            
+            # Update total time
+            summary[issue_key]['total_seconds'] += time_spent_seconds
+            summary[issue_key]['total_hours'] = summary[issue_key]['total_seconds'] / 3600
+            summary[issue_key]['total_days'] = summary[issue_key]['total_hours'] / 8  # Assuming 8-hour workday
+            summary[issue_key]['worklog_count'] += 1
+            
+            # Track unique dates
+            if 'started' in worklog:
+                started_date = worklog['started'].split()[0]  # Extract YYYY-MM-DD part
+                summary[issue_key]['dates'].add(started_date)
+        
+        # Convert sets to counts of unique days for easier display
+        for issue_key in summary:
+            summary[issue_key]['unique_days'] = len(summary[issue_key]['dates'])
+            del summary[issue_key]['dates']  # Remove the set as it's not needed anymore
+        
+        return summary
 
 
 def parse_args():
@@ -334,6 +438,15 @@ def parse_args():
                        help="Start date for approval period (default: first day of current month)")
     parser.add_argument("--status", type=str, nargs="+", choices=["waiting_for_approval", "open", "approved"],
                        help="Filter by specific status(es). Can specify multiple values.")
+    parser.add_argument("--simple", action="store_true", help="Use simplified display format (hide user keys)")
+    parser.add_argument("--show-vacation", action="store_true", help="Show vacation days taken (ADM-65)")
+    
+    # Add worklog summary command
+    parser.add_argument("--worklogs", type=str, metavar="USER_KEY", help="Show worklog summary for a specific user")
+    parser.add_argument("--from-date", type=str, metavar="YYYY-MM-DD", 
+                       help="Start date for worklog period (default: first day of current month)")
+    parser.add_argument("--to-date", type=str, metavar="YYYY-MM-DD", 
+                       help="End date for worklog period (default: last day of current month)")
     
     return parser.parse_args()
 
@@ -476,10 +589,70 @@ def main():
                 team = approval_data.get('team', {})
                 team_name = team.get('name', f"Team {team_id}")
                 
+                # Fetch vacation data if requested
+                vacation_data = {}
+                if args.show_vacation:
+                    period = approval_data.get('period', {})
+                    from_date = period.get('dateFrom')
+                    to_date = period.get('dateTo')
+                    
+                    if from_date and to_date:
+                        for approval in approval_data['approvals']:
+                            user = approval.get('user', {})
+                            user_key = user.get('key')
+                            
+                            if user_key:
+                                try:
+                                    # Search worklogs for ADM-65 (vacation) entries
+                                    worklogs = client.search_worklogs(from_date, to_date, [user_key])
+                                    vacation_hours = 0
+                                    vacation_days = 0
+                                    
+                                    for worklog in worklogs:
+                                        issue = worklog.get('issue', {})
+                                        if issue.get('key') == 'ADM-65':
+                                            # Sum up vacation hours
+                                            vacation_hours += worklog.get('timeSpentSeconds', 0) / 3600
+                                    
+                                    # Calculate days (assuming 8-hour workday)
+                                    vacation_days = vacation_hours / 8
+                                    
+                                    # Store vacation data
+                                    vacation_data[user_key] = {
+                                        'hours': vacation_hours,
+                                        'days': vacation_days
+                                    }
+                                except Exception as e:
+                                    logger.warning(f"Could not fetch vacation data for {user_key}: {e}")
+                
+                # Print header
                 print(f"\nTimesheet Approvals for {team_name} ({date_from} to {date_to}):")
-                print("-" * 100)
-                print(f"{'Name':<25} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12}")
-                print("-" * 100)
+                
+                # Determine what columns to show
+                if args.simple:
+                    # Simple mode (no user keys)
+                    if args.show_vacation:
+                        # With vacation data
+                        print("-" * 140)
+                        print(f"{'Name':<25} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12} | {'Vacation (d)':^12} | {'Vacation (h)':^12}")
+                        print("-" * 140)
+                    else:
+                        # Without vacation data
+                        print("-" * 100)
+                        print(f"{'Name':<25} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12}")
+                        print("-" * 100)
+                else:
+                    # Full mode (with user keys)
+                    if args.show_vacation:
+                        # With vacation data
+                        print("-" * 160)
+                        print(f"{'Name':<25} | {'User Key':<20} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12} | {'Vacation (d)':^12} | {'Vacation (h)':^12}")
+                        print("-" * 160)
+                    else:
+                        # Without vacation data
+                        print("-" * 130)
+                        print(f"{'Name':<25} | {'User Key':<20} | {'Status':<20} | {'Completion':^15} | {'Worked (h)':^12} | {'Required (h)':^12} | {'Submitted (h)':^12}")
+                        print("-" * 130)
                 
                 # Count totals for the summary
                 total_members = 0
@@ -492,6 +665,7 @@ def main():
                 for approval in approval_data['approvals']:
                     user = approval.get('user', {})
                     display_name = user.get('displayName', user.get('name', 'N/A'))
+                    user_key = user.get('key', 'N/A')
                     
                     status = approval.get('status', 'N/A')
                     worked_seconds = approval.get('workedSeconds', 0)
@@ -534,7 +708,34 @@ def main():
                     required_str = f"{required_hours:6.1f}"
                     submitted_str = f"{submitted_hours:6.1f}"
                     
-                    print(f"{display_name:<25} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12}")
+                    # Get vacation data if available
+                    vacation_hours = 0
+                    vacation_days = 0
+                    if args.show_vacation and user_key in vacation_data:
+                        vacation_hours = vacation_data[user_key]['hours']
+                        vacation_days = vacation_data[user_key]['days']
+                    
+                    # Format with proper alignment
+                    vacation_hours_str = f"{vacation_hours:6.1f}"
+                    vacation_days_str = f"{vacation_days:6.1f}"
+                    
+                    # Choose output format based on options
+                    if args.simple:
+                        # Simple mode (no user keys)
+                        if args.show_vacation:
+                            # With vacation data
+                            print(f"{display_name:<25} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12} | {vacation_days_str:^12} | {vacation_hours_str:^12}")
+                        else:
+                            # Without vacation data
+                            print(f"{display_name:<25} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12}")
+                    else:
+                        # Full mode (with user keys)
+                        if args.show_vacation:
+                            # With vacation data
+                            print(f"{display_name:<25} | {user_key:<20} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12} | {vacation_days_str:^12} | {vacation_hours_str:^12}")
+                        else:
+                            # Without vacation data
+                            print(f"{display_name:<25} | {user_key:<20} | {status_display:<20} | {completion_str:^15} | {worked_str:^12} | {required_str:^12} | {submitted_str:^12}")
                 
                 # Display summary information if there were any filtered results
                 if filtered_count > 0 or args.status:
@@ -543,14 +744,28 @@ def main():
                     if total_required_hours > 0:
                         total_completion = (total_worked_hours / total_required_hours) * 100
                     
-                    # Format the summary values
+                    # Format numerical values for consistent alignment
                     total_completion_str = f"{total_completion:6.1f}%"
                     total_worked_str = f"{total_worked_hours:6.1f}"
                     total_required_str = f"{total_required_hours:6.1f}"
                     total_submitted_str = f"{total_submitted_hours:6.1f}"
                     
-                    # Show summary line with totals
-                    print(f"{'SUMMARY':<25} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12}")
+                    # Format summary line based on display mode
+                    if args.simple:
+                        # Simple mode (no user keys)
+                        if args.show_vacation:
+                            # With vacation data
+                            print(f"{'SUMMARY':<25} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12} | {' ':^12} | {' ':^12}")
+                        else:
+                            # Simple mode without vacation
+                            print(f"{'SUMMARY':<25} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12}")
+                    else:
+                        if args.show_vacation:
+                            # Full mode with vacation
+                            print(f"{'SUMMARY':<25} | {'-':<20} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12} | {' ':^12} | {' ':^12}")
+                        else:
+                            # Full mode without vacation
+                            print(f"{'SUMMARY':<25} | {'-':<20} | {f'Showing {total_members-filtered_count} of {total_members}':<20} | {total_completion_str:^15} | {total_worked_str:^12} | {total_required_str:^12} | {total_submitted_str:^12}")
                     
                     if args.status:
                         status_list = ', '.join(args.status)
@@ -558,6 +773,78 @@ def main():
                 
         except Exception as e:
             logger.error(f"Failed to retrieve timesheet approvals: {e}")
+            sys.exit(1)
+    elif args.worklogs is not None:
+        try:
+            # Parse date range
+            from_date = args.from_date
+            to_date = args.to_date
+            
+            # If dates not specified, use current month for from_date
+            if not from_date:
+                today = date.today()
+                first_day = date(today.year, today.month, 1)
+                from_date = first_day.strftime("%Y-%m-%d")
+                
+            # If to_date not specified, calculate last day of the month based on from_date
+            if not to_date:
+                # Parse from_date
+                from_year, from_month, from_day = map(int, from_date.split('-'))
+                
+                # Calculate last day of the from_date's month
+                if from_month == 12:
+                    last_day = date(from_year + 1, 1, 1) - timedelta(days=1)
+                else:
+                    last_day = date(from_year, from_month + 1, 1) - timedelta(days=1)
+                    
+                to_date = last_day.strftime("%Y-%m-%d")
+            
+            # Get worklog data
+            worklogs = client.search_worklogs(from_date, to_date, [args.worklogs])
+            
+            if not worklogs:
+                print(f"\nNo worklog data found for user {args.worklogs} in the period {from_date} to {to_date}")
+            else:
+                # Get summary by issue
+                issue_summary = client.summarize_worklogs_by_issue(worklogs)
+                
+                # Display summary
+                print(f"\nWorklog Summary for {args.worklogs} ({from_date} to {to_date}):")
+                print("-" * 120)
+                print(f"{'Issue Key':<12} | {'Summary':<50} | {'Hours':^8} | {'Days':^8} | {'Unique Days':^12} | {'Entries':^8}")
+                print("-" * 120)
+                
+                # Sort issues by most hours spent
+                sorted_issues = sorted(issue_summary.values(), key=lambda x: x['total_hours'], reverse=True)
+                
+                total_hours = 0
+                total_days = 0
+                for issue in sorted_issues:
+                    # Track totals
+                    total_hours += issue['total_hours']
+                    total_days += issue['total_days']
+                    
+                    # Format values
+                    hours_str = f"{issue['total_hours']:6.1f}"
+                    days_str = f"{issue['total_days']:6.1f}"
+                    unique_days_str = f"{issue['unique_days']:^12}"
+                    entries_str = f"{issue['worklog_count']:^8}"
+                    
+                    # Truncate summary if too long
+                    summary = issue['summary']
+                    if len(summary) > 47:
+                        summary = summary[:44] + "..."
+                    
+                    print(f"{issue['key']:<12} | {summary:<50} | {hours_str:^8} | {days_str:^8} | {unique_days_str} | {entries_str}")
+                
+                # Print totals
+                print("-" * 120)
+                total_hours_str = f"{total_hours:6.1f}"
+                total_days_str = f"{total_days:6.1f}"
+                print(f"{'TOTAL':<12} | {'All Issues':<50} | {total_hours_str:^8} | {total_days_str:^8} | {' ':^12} | {len(worklogs):^8}")
+                
+        except Exception as e:
+            logger.error(f"Failed to retrieve worklog data: {e}")
             sys.exit(1)
     else:
         # If no operation specified, show help
