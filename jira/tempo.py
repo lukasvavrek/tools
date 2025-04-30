@@ -416,6 +416,65 @@ class JiraTempoClient:
             del summary[issue_key]['dates']  # Remove the set as it's not needed anymore
         
         return summary
+    
+    def approve_timesheet(self, user_key: str, period_start_date: str, reviewer_key: str, comment: str = "") -> Dict[str, Any]:
+        """
+        Approve a timesheet for a specific user and period.
+        
+        Args:
+            user_key: The key of the user whose timesheet to approve
+            period_start_date: The start date of the period in YYYY-MM-DD format
+            reviewer_key: The key of the user approving the timesheet
+            comment: Optional comment for the approval
+            
+        Returns:
+            The API response containing approval details
+            
+        Example response:
+        {
+            "user": {
+                "key": "JIRAUSER83127",
+                "displayName": "Pavol Hudacko"
+            },
+            "status": "approved",
+            "workedSeconds": 576000,
+            "submittedSeconds": 576000,
+            "requiredSeconds": 576000
+        }
+        """
+        endpoint = "rest/tempo-timesheets/4/timesheet-approval"
+        
+        # Prepare request body
+        data = {
+            "user": {"key": user_key},
+            "period": {"dateFrom": period_start_date},
+            "action": {
+                "name": "approve",
+                "comment": comment,
+                "reviewer": {"key": reviewer_key}
+            },
+            "meta": {"analytics-number-of-approvals": 1}
+        }
+        
+        # Make the request
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        logger.debug(f"Making POST request to {url} with data {data}")
+        
+        try:
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+            
+            # Handle empty responses
+            if not response.text:
+                return {}
+                
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request failed: {e}")
+            if hasattr(e.response, 'text'):
+                logger.error(f"Response text: {e.response.text}")
+            raise
 
 
 def parse_args():
@@ -447,6 +506,10 @@ def parse_args():
                        help="Start date for worklog period (default: first day of current month)")
     parser.add_argument("--to-date", type=str, metavar="YYYY-MM-DD", 
                        help="End date for worklog period (default: last day of current month)")
+    
+    # Add approval action
+    parser.add_argument("--approve", type=str, nargs="+", metavar="USER_KEY", help="Approve timesheet for one or more users (space-separated)")
+    parser.add_argument("--approve-comment", type=str, help="Comment to include with approval")
     
     return parser.parse_args()
 
@@ -773,6 +836,159 @@ def main():
                 
         except Exception as e:
             logger.error(f"Failed to retrieve timesheet approvals: {e}")
+            sys.exit(1)
+    elif args.approve is not None:
+        try:
+            # First, get current user info for the reviewer key
+            reviewer_info = client.get_myself()
+            reviewer_key = reviewer_info.get('key')
+            
+            if not reviewer_key:
+                logger.error("Could not determine reviewer key from your account")
+                sys.exit(1)
+            
+            # Determine the period start date
+            period_start = args.period_start
+            if not period_start:
+                # Default to first day of current month
+                today = date.today()
+                period_start = date(today.year, today.month, 1).strftime("%Y-%m-%d")
+            
+            # Get the approval data to check completion
+            # First, find which team the user is in
+            teams = client.get_teams()
+            user_team_id = None
+            
+            for team in teams:
+                # Check if we're the leader of this team
+                lead_user = team.get('leadUser', {})
+                if lead_user.get('key') == reviewer_key:
+                    user_team_id = team.get('id')
+                    break
+            
+            if not user_team_id:
+                logger.error("Could not find a team where you are the leader")
+                sys.exit(1)
+            
+            # Parse period start date
+            try:
+                year, month, day = map(int, period_start.split('-'))
+                period_start_date = date(year, month, day)
+            except ValueError:
+                logger.error(f"Invalid date format: {period_start}. Use YYYY-MM-DD.")
+                sys.exit(1)
+            
+            # Get approval data for the team
+            approval_data = client.get_timesheet_approvals(user_team_id, period_start_date)
+            
+            # Track success and failures
+            success_count = 0
+            failure_count = 0
+            skipped_count = 0
+            results = []
+            
+            # Process each user to approve
+            for user_key in args.approve:
+                # Find the user's approval data
+                user_approval = None
+                user_name = user_key  # Default name is the key
+                
+                for approval in approval_data.get('approvals', []):
+                    user = approval.get('user', {})
+                    if user.get('key') == user_key:
+                        user_approval = approval
+                        user_name = user.get('displayName', user_key)
+                        break
+                
+                if not user_approval:
+                    logger.warning(f"User {user_key} not found in team or has no timesheet data for this period")
+                    results.append({
+                        'user_key': user_key,
+                        'user_name': user_name,
+                        'status': 'skipped',
+                        'message': 'User not found or no timesheet data'
+                    })
+                    skipped_count += 1
+                    continue
+                
+                # Check completion percentage
+                worked_seconds = user_approval.get('workedSeconds', 0)
+                required_seconds = user_approval.get('requiredSeconds', 0) 
+                
+                if required_seconds > 0:
+                    completion_pct = (worked_seconds / required_seconds) * 100
+                else:
+                    completion_pct = 0
+                
+                # Check if user has 100% completion
+                if completion_pct < 100:
+                    logger.warning(f"Cannot approve timesheet for {user_name}: completion is only {completion_pct:.1f}%")
+                    results.append({
+                        'user_key': user_key,
+                        'user_name': user_name,
+                        'status': 'failed',
+                        'message': f'Completion is only {completion_pct:.1f}%'
+                    })
+                    failure_count += 1
+                    continue
+                
+                # User has 100% completion, proceed with approval
+                comment = args.approve_comment or ""
+                
+                try:
+                    # Call the approval endpoint
+                    response = client.approve_timesheet(user_key, period_start, reviewer_key, comment)
+                    
+                    # Add to success results
+                    results.append({
+                        'user_key': user_key,
+                        'user_name': response.get('user', {}).get('displayName', user_name),
+                        'status': 'approved',
+                        'period_from': response.get('period', {}).get('dateFrom'),
+                        'period_to': response.get('period', {}).get('dateTo')
+                    })
+                    success_count += 1
+                    
+                except Exception as e:
+                    # Log API errors
+                    logger.warning(f"API error approving {user_name}: {e}")
+                    results.append({
+                        'user_key': user_key,
+                        'user_name': user_name,
+                        'status': 'failed',
+                        'message': f'API error: {str(e)}'
+                    })
+                    failure_count += 1
+            
+            # Display summary of results
+            if success_count > 0:
+                print(f"\n✅ Successfully approved {success_count} timesheet(s):")
+                for result in results:
+                    if result['status'] == 'approved':
+                        print(f"  - {result['user_name']} ({result['user_key']})")
+                        print(f"    Period: {result.get('period_from')} to {result.get('period_to')}")
+            
+            if failure_count > 0:
+                print(f"\n❌ Failed to approve {failure_count} timesheet(s):")
+                for result in results:
+                    if result['status'] == 'failed':
+                        print(f"  - {result['user_name']} ({result['user_key']}): {result['message']}")
+            
+            if skipped_count > 0:
+                print(f"\n⚠️ Skipped {skipped_count} user(s):")
+                for result in results:
+                    if result['status'] == 'skipped':
+                        print(f"  - {result['user_name']} ({result['user_key']}): {result['message']}")
+            
+            # Show final summary
+            print(f"\nApproval Summary: {success_count} approved, {failure_count} failed, {skipped_count} skipped")
+            print(f"Period: {period_start} to {approval_data.get('period', {}).get('dateTo')}")
+            print(f"Approved by: {reviewer_info.get('displayName')}")
+            if args.approve_comment:
+                print(f"Comment: {args.approve_comment}")
+                            
+        except Exception as e:
+            logger.error(f"Failed to approve timesheets: {e}")
             sys.exit(1)
     elif args.worklogs is not None:
         try:
