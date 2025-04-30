@@ -1,4 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# dependencies = [
+#   "requests",
+#   "pandas",
+#   "argparse",
+#   "datetime",
+# ]
+# ///
 
 # https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28#list-pull-requests
 
