@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import logging
+import textwrap
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -484,32 +485,77 @@ def parse_args():
     Returns:
         Parsed arguments
     """
-    parser = argparse.ArgumentParser(description="Track TEMPO timesheets via Jira API")
+    parser = argparse.ArgumentParser(
+        description="Jira Tempo Timesheet Tracker - Manage and analyze team timesheets",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+        Examples:
+          # Show your user information
+          python tempo.py --whoami
+          
+          # List all your teams
+          python tempo.py --teams
+          
+          # Show members of team 591
+          python tempo.py --team-members 591
+          
+          # Show timesheet approvals for your team
+          python tempo.py --approvals 591
+          
+          # Filter approvals by status and show simplified view
+          python tempo.py --approvals 591 --status waiting_for_approval --simple
+          
+          # Show team timesheet status with vacation tracking
+          python tempo.py --approvals 591 --show-vacation
+          
+          # View work logs for a specific user
+          python tempo.py --worklogs JIRAUSER93736
+          
+          # Approve multiple timesheets at once
+          python tempo.py --approve JIRAUSER93736 JIRAUSER83127 --approve-comment "Great work!"
+        ''')
+    )
     
-    # Add arguments
-    parser.add_argument("--whoami", action="store_true", help="Show current user information")
-    parser.add_argument("--teams", action="store_true", help="List all teams you belong to")
-    parser.add_argument("--team-members", type=int, metavar="TEAM_ID", help="List members of a specific team by ID")
+    # Create argument groups for better organization
+    info_group = parser.add_argument_group('User & Team Information')
+    timesheet_group = parser.add_argument_group('Timesheet Reporting')
+    worklog_group = parser.add_argument_group('Worklog Analysis')
+    approval_group = parser.add_argument_group('Timesheet Approval')
     
-    # Add timesheet approvals command
-    parser.add_argument("--approvals", type=int, metavar="TEAM_ID", help="Show timesheet approvals for a team")
-    parser.add_argument("--period-start", type=str, metavar="YYYY-MM-DD", 
-                       help="Start date for approval period (default: first day of current month)")
-    parser.add_argument("--status", type=str, nargs="+", choices=["waiting_for_approval", "open", "approved"],
-                       help="Filter by specific status(es). Can specify multiple values.")
-    parser.add_argument("--simple", action="store_true", help="Use simplified display format (hide user keys)")
-    parser.add_argument("--show-vacation", action="store_true", help="Show vacation days taken (ADM-65)")
+    # User & Team Information
+    info_group.add_argument("--whoami", action="store_true", 
+                          help="Display current user information")
+    info_group.add_argument("--teams", action="store_true", 
+                          help="List all teams the current user belongs to")
+    info_group.add_argument("--team-members", type=int, metavar="TEAM_ID", 
+                          help="List all members of a specific team")
     
-    # Add worklog summary command
-    parser.add_argument("--worklogs", type=str, metavar="USER_KEY", help="Show worklog summary for a specific user")
-    parser.add_argument("--from-date", type=str, metavar="YYYY-MM-DD", 
-                       help="Start date for worklog period (default: first day of current month)")
-    parser.add_argument("--to-date", type=str, metavar="YYYY-MM-DD", 
-                       help="End date for worklog period (default: last day of current month)")
+    # Timesheet Reporting
+    timesheet_group.add_argument("--approvals", type=int, metavar="TEAM_ID", 
+                               help="Show timesheet approval status for all members of a team")
+    timesheet_group.add_argument("--period-start", type=str, metavar="YYYY-MM-DD", 
+                               help="Start date for timesheet period (default: first day of current month)")
+    timesheet_group.add_argument("--status", type=str, nargs="+", 
+                               choices=["waiting_for_approval", "open", "approved"],
+                               help="Filter approvals by status(es)")
+    timesheet_group.add_argument("--simple", action="store_true", 
+                               help="Use simplified display format (hide user keys)")
+    timesheet_group.add_argument("--show-vacation", action="store_true", 
+                               help="Include vacation days (ADM-65) in approval report")
     
-    # Add approval action
-    parser.add_argument("--approve", type=str, nargs="+", metavar="USER_KEY", help="Approve timesheet for one or more users (space-separated)")
-    parser.add_argument("--approve-comment", type=str, help="Comment to include with approval")
+    # Worklog Analysis
+    worklog_group.add_argument("--worklogs", type=str, metavar="USER_KEY", 
+                             help="Show detailed worklog summary for a specific user")
+    worklog_group.add_argument("--from-date", type=str, metavar="YYYY-MM-DD", 
+                             help="Start date for worklog period (default: first day of current month)")
+    worklog_group.add_argument("--to-date", type=str, metavar="YYYY-MM-DD", 
+                             help="End date for worklog period (default: last day of month from --from-date)")
+    
+    # Timesheet Approval
+    approval_group.add_argument("--approve", type=str, nargs="+", metavar="USER_KEY", 
+                              help="Approve timesheet(s) for one or more users (space-separated user keys)")
+    approval_group.add_argument("--approve-comment", type=str, metavar="TEXT", 
+                              help="Optional comment to include with the timesheet approval(s)")
     
     return parser.parse_args()
 
